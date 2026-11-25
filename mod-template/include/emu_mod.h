@@ -87,6 +87,46 @@ int emu_sound_play_ex(int sound, float volume, float start, float rate);
 void emu_sound_set_volume(int voice, float volume);
 float emu_sound_length(int sound);
 
+// ---- Overlay: the mod's own UI drawn over the game (PC window, phone and screenshots).
+// Coordinates are pixels of the game's frame (emu_overlay_frame_size), origin top-left.
+// The vertex / command layout matches Dear ImGui's ImDrawVert / ImDrawCmd, so ImGui's draw
+// data can be sent as it is (merge all lists into one vertex and one index buffer).
+typedef struct EmuOverlayVertex {
+    float x, y, u, v;
+    uint32_t col;  // RGBA8, R in the low byte (IM_COL32)
+} EmuOverlayVertex;
+typedef struct EmuOverlayCmd {
+    uint32_t elem_count, idx_offset, vtx_offset, texture;  // texture: id given to emu_overlay_texture (0 = white)
+    float clip[4];                                         // x0, y0, x1, y1
+} EmuOverlayCmd;
+typedef struct EmuOverlayEvent {
+    uint32_t type;  // 1 pointer down, 2 move, 3 up, 4 wheel, 5 key down, 6 key up, 7 char, 8 hover
+    int32_t id;     // pointer: 0 left / 1 right / 2 middle (PC mouse), 100 + n (phone touch); wheel: +1 / -1; key: virtual-key code
+    float x, y;
+    uint32_t chr;   // char: unicode code point
+    uint32_t mods;
+} EmuOverlayEvent;
+enum { EMU_OVERLAY_WANT_CURSOR = 1, EMU_OVERLAY_WANT_KEYBOARD = 2 };
+// The frame to draw (call it once a frame; the last one stays on screen for up to 1 second).
+// fb_w x fb_h: the frame size it was made for.
+void emu_overlay_render(const EmuOverlayVertex* vtx, int nvtx, const uint32_t* idx, int nidx, const EmuOverlayCmd* cmds, int ncmds,
+                        int fb_w, int fb_h);
+// A texture (RGBA8, w x h) for the commands (id > 0); rgba = NULL deletes it.
+void emu_overlay_texture(int id, const void* rgba, int w, int h);
+// The areas (x0, y0, x1, y1 each) where pointer input goes to the mod instead of the game, and
+// flags: EMU_OVERLAY_WANT_CURSOR frees the mouse (no mouse look) while the UI is open,
+// EMU_OVERLAY_WANT_KEYBOARD takes the keys and characters (a text field of the UI has the focus).
+void emu_overlay_capture(const float* rects, int nrects, uint32_t flags);
+// Input taken by the overlay (and the mouse position while it is over the game): returns the count.
+int emu_overlay_events(EmuOverlayEvent* out, int max);
+void emu_overlay_frame_size(int* w, int* h);
+// A system font with Japanese glyphs (TrueType collection bytes): returns its size and copies it
+// into out when cap is big enough (call with out = NULL first).
+uint64_t emu_system_font(void* out, uint64_t cap);
+
+// 1 when the memory [addr, addr + len) can be read (check a pointer of unknown origin before following it).
+int emu_readable(const void* addr, uint64_t len);
+
 #ifdef __cplusplus
 }
 #endif

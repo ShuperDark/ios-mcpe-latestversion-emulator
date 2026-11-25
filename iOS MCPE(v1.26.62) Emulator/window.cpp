@@ -1,6 +1,7 @@
 #include "window.h"
 #include "auth.h"
 #include "controls.h"
+#include "overlay.h"
 #include "remote.h"
 #include "vopts.h"
 
@@ -60,6 +61,7 @@ double ts() {
 }
 
 void push(Event e) {
+    if (overlay::filter(e)) return;  // a mod's UI (emu_overlay_*) takes it
     e.time = ts();
     std::lock_guard lk(g_lock);
     g_events.push_back(e);
@@ -168,7 +170,7 @@ void release_buttons(float x, float y) {
 }
 
 void update_capture() {
-    bool want = g_gameplay && g_focused && !g_text_input && !g_no_mouselook && !g_remote && g_hwnd;
+    bool want = g_gameplay && g_focused && !g_text_input && !g_no_mouselook && !g_remote && g_hwnd && !overlay::wants_cursor();
     if (want == g_captured) return;
     g_captured = want;
     release_buttons(g_w / 2.0f, g_h / 2.0f);
@@ -499,7 +501,7 @@ void size(int* w, int* h) {
 
 // debug: EMU_AUTOTAP="12:640,370;20:300,200" taps (window pixels) at the given seconds.
 // Other entries: "20:key=E" (press+release; ESC or #<vk> also work), "20:keydown=W",
-// "22:keyup=W", "20:mouse=100,0" (relative motion), "20:mbutton=1,1" (game mouse button
+// "22:keyup=W", "20:text=/help" (typed characters), "20:mouse=100,0" (relative motion), "20:mbutton=1,1" (game mouse button
 // 1 left / 2 right, 1 down / 0 up).
 static int autotap_vk(const char* k) {
     if (_stricmp(k, "ESC") == 0) return VK_ESCAPE;
@@ -507,7 +509,7 @@ static int autotap_vk(const char* k) {
     return toupper((u8)k[0]);
 }
 static void autotap() {
-    enum { Tap, Key, KeyDown, KeyUp, Move, MButton, Touch, Hover };
+    enum { Tap, Key, KeyDown, KeyUp, Move, MButton, Touch, Hover, Char };
     struct Item { double t; int kind; float x, y; };
     static std::vector<Item> items;
     static bool parsed = false;
@@ -524,6 +526,12 @@ static void autotap() {
                 float x, y;
                 char key[16] = {};
                 std::string item = str.substr(pos, e - pos);
+                char txt[64];
+                if (sscanf(item.c_str(), "%lf:text=%63[^;]", &t, txt) == 2) {  // typed characters (one WM_CHAR each)
+                    for (int k = 0; txt[k]; k++) items.push_back({t + k * 0.05, Char, 0, (float)(u8)txt[k]});
+                    pos = e + 1;
+                    continue;
+                }
                 if (sscanf(item.c_str(), "%lf:keydown=%15[^;]", &t, key) == 2) items.push_back({t, KeyDown, 0, (float)autotap_vk(key)});
                 else if (sscanf(item.c_str(), "%lf:keyup=%15[^;]", &t, key) == 2) items.push_back({t, KeyUp, 0, (float)autotap_vk(key)});
                 else if (sscanf(item.c_str(), "%lf:key=%15[^;]", &t, key) == 2) items.push_back({t, Key, 0, (float)autotap_vk(key)});
@@ -546,6 +554,7 @@ static void autotap() {
             PostMessageW(g_hwnd, WM_KEYUP, (WPARAM)it.y, 1 | (1u << 30) | (1u << 31));
             break;
         case KeyDown: PostMessageW(g_hwnd, WM_KEYDOWN, (WPARAM)it.y, 1); break;
+        case Char: PostMessageW(g_hwnd, WM_CHAR, (WPARAM)it.y, 1); break;
         case KeyUp: PostMessageW(g_hwnd, WM_KEYUP, (WPARAM)it.y, 1 | (1u << 30) | (1u << 31)); break;
         case Move: push({EvGameMouseMove, 0, it.x, it.y}); break;
         case MButton: push({EvGameMouseButton, (s32)it.x, g_w / 2.0f, g_h / 2.0f, (u32)(s32)it.y}); break;
@@ -570,6 +579,7 @@ static void autotap() {
 
 int poll(Event* out, int max) {
     apply_requests();
+    update_capture();  // (a mod's UI may have opened or closed: emu_overlay_capture)
     autotap();
     MSG m;
     while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) {
@@ -608,6 +618,10 @@ void present(u32 rb, int rb_w, int rb_h) {
     pglFramebufferRenderbuffer(0x8CA8, 0x8CE0, 0x8D41, rb);  // COLOR_ATTACHMENT0, GL_RENDERBUFFER
     g_present_rb_attached = rb;
     pglBindFramebuffer(0x8CA9, 0);  // GL_DRAW_FRAMEBUFFER
+    if (scissor) glDisable(GL_SCISSOR_TEST);
+    overlay::draw(g_present_fbo, rb_w, rb_h, gl_proc);  // the mods' UI (emu_overlay_*), also on the phone
+    pglBindFramebuffer(0x8CA8, g_present_fbo);
+    pglBindFramebuffer(0x8CA9, 0);
     if (scissor) glDisable(GL_SCISSOR_TEST);
     remote::capture(rb_w, rb_h);  // the phone's copy of the frame (needs the read framebuffer)
     // keep the aspect ratio (the render size differs from the window while a phone is connected)

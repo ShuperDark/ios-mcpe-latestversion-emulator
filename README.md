@@ -313,6 +313,13 @@ Objective-C のメソッドは名前で見つかるので、ゲームのアド�
 
 - Mod はゲーム内（arm64 の JIT 上）で動くため、Visual Studio のブレークポイントは効きません。`emu_log` / `EMU_LOGF` で `emulator.log` に出力して確認してください
 - ゲームの C++ 関数をフックするときは、逆アセンブラで `minecraftpe`（ベースアドレス 0x100000000）を開いてアドレスを調べ、`emu_hook` を使います
+- Mod 独自の画面（メニューなど）は overlay API で、ゲームの画面に重ねて描けます（`overlay.cpp`）。
+  三角形のリスト（Dear ImGui の描画データと同じ形）を `emu_overlay_render` で毎フレーム渡すと、ゲームの画面の上に描かれ、
+  PC のウィンドウにも接続中の iPhone にも表示されます。`emu_overlay_capture` で指定した範囲のマウス・タッチ操作はゲームではなく
+  Mod に渡り（`emu_overlay_events` で受け取る）、`EMU_OVERLAY_WANT_CURSOR` を付けるとワールドの中でもマウスが解放されます。
+  日本語の文字を描くためのシステムフォント（メイリオなど）は `emu_system_font` で取得できます
+- `emu_readable(アドレス, 長さ)` で、読んでよいメモリかを確かめられます（構造の分からないポインタをたどるとき用）
+- このエミュレータ用の大きな Mod の例：[ShupaClient](../ShupaClient-Emu)（ImGui のメニュー、vtable フック、QuickJS の JS MOD）
 - 必要なのは Python と `py -m pip install ziglang` だけです（エミュレータのビルドで入っていればそのまま使えます）
 
 ## GitHub に公開するとき
@@ -331,7 +338,7 @@ Boost（Boost Software License 1.0）、zlib（zlib License）、minimp3（CC0�
 |---|---|
 | `EMU_WINDOW_SIZE=1600x900` | ウィンドウサイズ（ピクセル） |
 | `EMU_SCREENSHOT=<dir>` / `EMU_SCREENSHOT_EVERY=<秒>` | フレームを BMP で保存 |
-| `EMU_AUTOTAP="40:hover=640,358;41:640,358;60:key=E;62:keydown=W;64:keyup=W;66:mouse=100,0;70:touch=300,200"` | 指定秒にマウス移動（hover）/ クリック / キー / 相対移動（mouse）/ タッチ（自動テスト用） |
+| `EMU_AUTOTAP="40:hover=640,358;41:640,358;60:key=E;62:keydown=W;64:keyup=W;66:mouse=100,0;70:touch=300,200;72:text=abc"` | 指定秒にマウス移動（hover）/ クリック / キー / 相対移動（mouse）/ タッチ / 文字入力（text）（自動テスト用） |
 | `EMU_WATCHDOG=<秒>` | 定期的に全ゲストスレッドのレジスタ/バックトレースを出力 |
 | `EMU_TRACE_EXCEPTIONS=1` | ホスト側の first-chance 例外を出力 |
 | `EMU_TRACE_INPUT=1` | キーボード・マウス（GCKeyboard / GCMouse）とタッチの配送をログに出力 |

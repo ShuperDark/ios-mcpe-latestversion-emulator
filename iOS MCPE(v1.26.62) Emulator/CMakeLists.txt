@@ -51,6 +51,7 @@ add_executable(CMakeTarget
     msltest.cpp
     fastheap.cpp
     remote.cpp
+    overlay.cpp
     sound_codecs.cpp
     shaderpack.cpp
     vopts.cpp
