@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="MCPE">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="icon" href="/icon-192.png">
+<title>MCPE 1.26.62</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; overscroll-behavior: none;
+               touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+               font-family: -apple-system, system-ui, sans-serif; color: #fff; }
+  #stage { position: fixed; left: 0; top: 0; transform-origin: 0 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
+         padding: 24px; font-size: 17px; line-height: 1.6; background: #000; }
+  #kb { position: fixed; left: 0; right: 0; top: 0; display: none; gap: 8px; padding: 8px 10px; background: rgba(20,20,20,.92);
+        align-items: center; z-index: 2; touch-action: manipulation; }
+  #kb.on { display: flex; }
+  #kb input { flex: 1; min-width: 0; font-size: 17px; padding: 8px 10px; border-radius: 8px; border: 1px solid #666;
+              background: #fff; color: #000; -webkit-user-select: text; user-select: text; }
+  #kb span { font-size: 13px; color: #bbb; white-space: nowrap; }
+  #pick { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 3;
+          background: rgba(0,0,0,.75); touch-action: manipulation; }
+  #pick.on { display: flex; }
+  #pick div { background: #222; border: 1px solid #555; border-radius: 12px; padding: 18px; max-width: 360px; text-align: center;
+              font-size: 15px; line-height: 1.6; }
+  #pick label, #pick button { display: block; margin: 12px auto 0; padding: 10px 16px; border-radius: 8px; font-size: 16px;
+              border: 0; color: #fff; background: #3a7d2c; width: 100%; box-sizing: border-box; }
+  #pick button { background: #555; }
+  #pick input { display: none; }
+  /* a mod's button (emu_overlay_button): drawn as the game draws its buttons (its button texture, its bitmap font; see
+     drawOb), half transparent as the game's touch buttons, at the top left corner of the game */
+  #ob { position: absolute; left: 1%; top: 1.5%; display: none; z-index: 1; opacity: .6;
+        image-rendering: pixelated; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+  #ob.on { display: block; }
+  #ob.down { opacity: .85; }
+  #ob.clear { opacity: 0; }
+  #snd { position: fixed; right: 8px; bottom: 8px; z-index: 2; font-size: 12px; color: #fff; background: rgba(0,0,0,.6);
+         padding: 4px 8px; border-radius: 6px; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c" width="16" height="9"></canvas><canvas id="ob" width="1" height="1"></canvas></div>
+<div id="kb"><span>文字入力</span><input id="in" type="text" autocomplete="off" autocorrect="off" autocapitalize="off"
+     spellcheck="false" enterkeyhint="send" placeholder="ここをタップして入力"></div>
+<div id="pick"><div><span id="picktext">スキンにする画像（64×64 または 64×32 の PNG）を選んでください。<br>
+  <small>写真アプリの画像は透明部分が失われることがあるので、「ファイル」から選ぶのがおすすめです。</small></span>
+  <label><span id="pickbtn">画像を選ぶ</span><input id="pickfile" type="file" accept="image/png,image/*"></label>
+  <button id="pickcancel">キャンセル</button></div></div>
+<div id="snd">タップすると音が出ます</div>
+<div id="msg">接続しています…</div>
+<script>
+"use strict";
+const stage = document.getElementById("stage"), cv = document.getElementById("c"), ctx = cv.getContext("2d");
+const kb = document.getElementById("kb"), inp = document.getElementById("in"), msg = document.getElementById("msg");
+const pick = document.getElementById("pick"), pickfile = document.getElementById("pickfile"), snd = document.getElementById("snd");
+const skinPickText = document.getElementById("picktext").innerHTML;
+const ob = document.getElementById("ob");
+let ws = null, replaced = false, rotated = false, L = 1, S = 1, vw = 1, vh = 1;
+
+// ---- layout: the game is always landscape; in portrait the picture is turned 90 degrees
+function layout() {
+  vw = window.innerWidth; vh = window.innerHeight;
+  rotated = vh > vw;
+  L = Math.max(vw, vh); S = Math.min(vw, vh);
+  stage.style.width = L + "px"; stage.style.height = S + "px";
+  stage.style.transform = rotated ? `translate(${vw}px,0) rotate(90deg)` : "none";
+  drawOb();
+  sendSize();
+}
+function sendSize() {
+  const d = window.devicePixelRatio || 1;
+  // the screen in device pixels, and the pixel ratio (the emulator renders at 2x the points)
+  send(`s ${Math.round(L * d)} ${Math.round(S * d)} ${d}`);
+}
+window.addEventListener("resize", layout);
+
+// ---- the mod's button, as the game draws a button: ButtonWithBorder (the game uses its top left 6x6 pixels, 2 pixel
+// borders), the label in the game's font (font/default8.png: ASCII, 8x8 cells; glyph_XX.png: the other characters,
+// 16x16 cells drawn at half size; each character as wide as its pixels), grey (white while pressed)
+let obLabel = "";
+const obTex = {}, fontPages = {};
+function obImage(src) {
+  if (obTex[src]) return obTex[src];
+  const img = obTex[src] = new Image();
+  img.onload = drawOb;
+  img.src = src;
+  return img;
+}
+function fontPage(p) {  // -1: default8
+  if (fontPages[p]) return fontPages[p];
+  const f = fontPages[p] = { img: new Image(), w: null };
+  f.img.onload = () => {
+    const c = document.createElement("canvas");
+    c.width = f.img.width; c.height = f.img.height;
+    const x = c.getContext("2d");
+    x.drawImage(f.img, 0, 0);
+    const d = x.getImageData(0, 0, c.width, c.height).data, cell = p < 0 ? c.width / 16 : c.width / 16;
+    f.cell = cell;
+    f.w = [];
+    for (let i = 0; i < 256; i++) {
+      const cx = (i % 16) * cell, cy = ((i / 16) | 0) * cell;
+      let l = cell, r = -1;
+      for (let xx = 0; xx < cell; xx++)
+        for (let yy = 0; yy < cell; yy++)
+          if (d[((cy + yy) * c.width + cx + xx) * 4 + 3] > 0) { l = Math.min(l, xx); r = Math.max(r, xx); break; }
+      f.w.push(r < 0 ? null : [l, r]);
+    }
+    drawOb();
+  };
+  f.img.src = p < 0 ? "/font/default8.png" : "/font/glyph_" + p.toString(16).toUpperCase().padStart(2, "0") + ".png";
+  return f;
+}
+// the characters' pieces: [page, source x, y, w, h, drawn width, advance]
+function layoutText(s) {
+  const out = [];
+  let ready = true;
+  for (const ch of s) {
+    const code = ch.codePointAt(0);
+    if (code === 32) { out.push(null, 4); continue; }
+    const p = code < 128 ? -1 : code >> 8;
+    if (p > 255) continue;
+    const f = fontPage(p);
+    if (!f.w) { ready = false; continue; }
+    const i = code & 255, g = f.w[i];
+    if (!g) { out.push(null, 4); continue; }
+    const cx = (i % 16) * f.cell + g[0], cy = ((i / 16) | 0) * f.cell, sw = g[1] - g[0] + 1;
+    if (p < 0) out.push([f.img, cx, cy, sw, 8, sw, 8], sw + 1);
+    else out.push([f.img, cx, cy, sw, 16, sw / 2, 8], Math.ceil(sw / 2) + 1);
+  }
+  return ready ? out : null;
+}
+function drawOb() {
+  const down = ob.classList.contains("down");
+  const tex = obImage(down ? "/gui/ButtonWithBorderPressed.png" : "/gui/ButtonWithBorder.png");
+  const parts = layoutText(obLabel);
+  if (!tex.complete || !tex.naturalWidth || !parts) return;
+  let tw = 0;
+  for (let i = 1; i < parts.length; i += 2) tw += parts[i];
+  tw = Math.max(0, tw - 1);
+  const W = tw + 12, H = 20, R = 4;  // (drawn at 4x the game's pixels, scaled to the screen below)
+  ob.width = W * R; ob.height = H * R;
+  const x = ob.getContext("2d");
+  x.imageSmoothingEnabled = false;
+  // nine-slice of the top left 6x6 pixels, borders 2
+  const sx = [0, 2, 4], sw = [2, 2, 2], dx = [0, 2, W - 2], dw = [2, W - 4, 2], dy = [0, 2, H - 2], dh = [2, H - 4, 2];
+  for (let a = 0; a < 3; a++)
+    for (let b = 0; b < 3; b++) x.drawImage(tex, sx[a], sx[b], sw[a], sw[b], dx[a] * R, dy[b] * R, dw[a] * R, dh[b] * R);
+  // the text: drawn, then coloured
+  const t = document.createElement("canvas");
+  t.width = Math.max(1, tw * R); t.height = 8 * R;
+  const tx = t.getContext("2d");
+  tx.imageSmoothingEnabled = false;
+  let px = 0;
+  for (let i = 0; i < parts.length; i += 2) {
+    const g = parts[i];
+    if (g) tx.drawImage(g[0], g[1], g[2], g[3], g[4], px * R, 0, g[5] * R, g[6] * R);
+    px += parts[i + 1];
+  }
+  tx.globalCompositeOperation = "source-in";
+  tx.fillStyle = down ? "#ffffff" : "#4c4c4c";
+  tx.fillRect(0, 0, t.width, t.height);
+  x.drawImage(t, 6 * R, (6 + (down ? 1 : 0)) * R);
+  // the size: the game's interface pixels (its hotbar slot, 20 of them, is about a tenth of the screen's height)
+  const k = S / 205;
+  ob.style.width = W * k + "px"; ob.style.height = H * k + "px";
+}
+window.addEventListener("orientationchange", () => setTimeout(layout, 300));
+
+function send(s) { if (ws && ws.readyState === 1) ws.send(s); }
+
+// ---- frames
+let busy = false, next = null;
+function show(blob) {
+  if (busy) { next = blob; return; }
+  busy = true;
+  createImageBitmap(blob).then(bmp => {
+    if (cv.width !== bmp.width || cv.height !== bmp.height) { cv.width = bmp.width; cv.height = bmp.height; }
+    ctx.drawImage(bmp, 0, 0);
+    bmp.close && bmp.close();
+  }).catch(() => {}).finally(() => {
+    send("a");
+    busy = false;
+    if (next) { const b = next; next = null; show(b); }
+  });
+}
+
+// ---- touches -> 0..1 of the picture
+const slots = new Map();
+function pos(t) {
+  let x = t.clientX, y = t.clientY;
+  if (rotated) { const sx = y, sy = vw - x; x = sx; y = sy; }
+  return `${(x / L).toFixed(4)} ${(y / S).toFixed(4)}`;
+}
+function freeSlot() { for (let i = 0; i < 10; i++) if (![...slots.values()].includes(i)) return i; return -1; }
+function onTouch(e) {
+  unlockAudio();
+  if (e.target === inp || kb.contains(e.target) || pick.contains(e.target)) return;  // normal behaviour for these
+  if (e.target === ob) {  // the mod's button: tapped when the finger is lifted on it
+    e.preventDefault();
+    if (e.type === "touchstart") { ob.classList.add("down"); drawOb(); }
+    else if (e.type === "touchend" || e.type === "touchcancel") {
+      ob.classList.remove("down");
+      drawOb();
+      if (e.type === "touchend") send("ob");
+    }
+    return;
+  }
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (e.type === "touchstart") {
+      const s = freeSlot();
+      if (s < 0) continue;
+      slots.set(t.identifier, s);
+      send(`d ${s} ${pos(t)}`);
+    } else {
+      const s = slots.get(t.identifier);
+      if (s === undefined) continue;
+      if (e.type === "touchmove") send(`m ${s} ${pos(t)}`);
+      else { send(`${e.type === "touchend" ? "u" : "c"} ${s} ${pos(t)}`); slots.delete(t.identifier); }
+    }
+  }
+}
+for (const n of ["touchstart", "touchmove", "touchend", "touchcancel"]) document.addEventListener(n, onTouch, { passive: false });
+document.addEventListener("gesturestart", e => e.preventDefault());
+
+// ---- text input with the phone's keyboard (iOS opens it only when the user taps a text box)
+let last = "", composing = false;
+function cps(s) { return Array.from(s); }
+function flush() {
+  const a = cps(last), b = cps(inp.value);
+  let p = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  if (a.length - p > 0) send(`b ${a.length - p}`);
+  if (b.length - p > 0) send("t " + b.slice(p).join(""));
+  last = inp.value;
+}
+inp.addEventListener("compositionstart", () => { composing = true; });
+inp.addEventListener("compositionend", () => { composing = false; flush(); });
+inp.addEventListener("input", e => { if (!composing && !e.isComposing) flush(); });
+inp.addEventListener("keydown", e => {
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === "Enter") { e.preventDefault(); flush(); send("e"); inp.value = ""; last = ""; }
+  else if (e.key === "Backspace" && inp.value === "") send("b 1");
+});
+function setKeyboard(on) {
+  kb.classList.toggle("on", on);
+  if (on) { inp.value = ""; last = ""; inp.focus(); }  // focus() only opens the keyboard on some iOS versions
+  else inp.blur();
+}
+
+// ---- sound: 16-bit stereo PCM scheduled with Web Audio (iOS starts audio only from a touch)
+let actx = null, nextT = 0;
+function unlockAudio() {
+  try {
+    if (!actx) {
+      if (navigator.audioSession) navigator.audioSession.type = "playback";  // play even in silent mode
+      const AC = window.AudioContext || window.webkitAudioContext;
+      actx = new AC({ latencyHint: "interactive" });
+    }
+    if (actx.state !== "running") actx.resume();
+  } catch (e) {}
+}
+function playPcm(buf) {
+  if (!actx || actx.state !== "running") return;
+  snd.style.display = "none";
+  const rate = new DataView(buf).getUint32(1, true);
+  const pcm = new Int16Array(buf.slice(5));
+  const n = pcm.length >> 1;
+  if (!n) return;
+  const ab = actx.createBuffer(2, n, rate), l = ab.getChannelData(0), r = ab.getChannelData(1);
+  for (let i = 0; i < n; i++) { l[i] = pcm[2 * i] / 32768; r[i] = pcm[2 * i + 1] / 32768; }
+  const src = actx.createBufferSource();
+  src.buffer = ab;
+  src.connect(actx.destination);
+  const now = actx.currentTime;
+  // keep about 60 ms queued: enough to ride out network jitter, little enough to stay in sync
+  if (nextT < now + 0.015 || nextT > now + 0.25) nextT = now + 0.06;
+  src.start(nextT);
+  nextT += n / rate;
+}
+document.addEventListener("touchend", unlockAudio, true);
+
+// ---- image picker (custom skin)
+// several sounds ("pick sounds"): packed into a ZIP archive (stored, UTF-8 names) as the PC does
+let pickMany = false;
+function crc32(u) {
+  let c, t = crc32.t;
+  if (!t) { t = crc32.t = new Uint32Array(256); for (let i = 0; i < 256; i++) { c = i; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[i] = c >>> 0; } }
+  c = 0xFFFFFFFF;
+  for (let i = 0; i < u.length; i++) c = t[(c ^ u[i]) & 255] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function zipFiles(files) {  // [{name, data: Uint8Array}] -> ArrayBuffer
+  const enc = new TextEncoder(), parts = [], cen = [];
+  let off = 0;
+  const h = (n, f) => { const b = new DataView(new ArrayBuffer(n)); f(b); return new Uint8Array(b.buffer); };
+  for (const f of files) {
+    const nm = enc.encode(f.name), crc = crc32(f.data), sz = f.data.length;
+    parts.push(h(30, b => { b.setUint32(0, 0x04034b50, true); b.setUint16(4, 20, true); b.setUint16(6, 0x800, true);
+      b.setUint32(14, crc, true); b.setUint32(18, sz, true); b.setUint32(22, sz, true); b.setUint16(26, nm.length, true); }), nm, f.data);
+    cen.push(h(46, b => { b.setUint32(0, 0x02014b50, true); b.setUint16(4, 20, true); b.setUint16(6, 20, true); b.setUint16(8, 0x800, true);
+      b.setUint32(16, crc, true); b.setUint32(20, sz, true); b.setUint32(24, sz, true); b.setUint16(28, nm.length, true); b.setUint32(42, off, true); }), nm);
+    off += 30 + nm.length + sz;
+  }
+  const cenSize = cen.reduce((a, x) => a + x.length, 0);
+  const end = h(22, b => { b.setUint32(0, 0x06054b50, true); b.setUint16(8, files.length, true); b.setUint16(10, files.length, true);
+    b.setUint32(12, cenSize, true); b.setUint32(16, off, true); });
+  return new Blob([...parts, ...cen, end]).arrayBuffer();
+}
+pickfile.addEventListener("change", () => {
+  const list = pickfile.files ? Array.from(pickfile.files) : [];
+  pickfile.value = "";
+  pick.classList.remove("on");
+  if (!list.length) { send("pc"); return; }
+  const f = list[0];
+  if (pickMany) {
+    Promise.all(list.map(x => x.arrayBuffer().then(b => ({ name: x.name, data: new Uint8Array(b) }))))
+      .then(zipFiles).then(b => { if (ws && ws.readyState === 1) { ws.send("pn " + f.name); ws.send(b); } }).catch(() => send("pc"));
+    return;
+  }
+  f.arrayBuffer().then(b => { if (ws && ws.readyState === 1) { ws.send("pn " + f.name); ws.send(b); } }).catch(() => send("pc"));
+});
+document.getElementById("pickcancel").addEventListener("click", () => { pick.classList.remove("on"); send("pc"); });
+
+// ---- connection
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { msg.style.display = "none"; layout(); };
+  ws.onmessage = e => {
+    if (typeof e.data !== "string") {
+      const type = new Uint8Array(e.data, 0, 1)[0];
+      if (type === 1) show(new Blob([new Uint8Array(e.data, 1)], { type: "image/jpeg" }));
+      else if (type === 2) playPcm(e.data);
+      return;
+    }
+    if (e.data === "pick cancel") { pick.classList.remove("on"); return; }
+    if (e.data.startsWith("ob ")) {  // the mod's button: "ob <mode> <label>" (0 hidden, 1 shown, 2 transparent)
+      const sp = e.data.indexOf(" ", 3), mode = e.data.substring(3, sp < 0 ? undefined : sp);
+      obLabel = sp < 0 ? "" : e.data.substring(sp + 1);
+      drawOb();
+      ob.classList.toggle("on", mode !== "0");
+      ob.classList.toggle("clear", mode === "2");
+      return;
+    }
+    if (e.data === "pick" || e.data === "pick media" || e.data === "pick model" || e.data === "pick sound" || e.data === "pick motion" ||
+        e.data === "pick sounds") {
+      pickMany = e.data === "pick sounds";
+      pickfile.multiple = pickMany;
+      const media = e.data === "pick media", model = e.data === "pick model", sound = e.data === "pick sound" || pickMany;
+      const motion = e.data === "pick motion";
+      document.getElementById("picktext").innerHTML = motion
+        ? "MMD のモーション（.vmd）を「ファイル」から選んでください。"
+        : pickMany
+        ? "音声ファイル（.mp3 / .ogg / .wav）を選んでください。<br><small>複数選ぶと、鳴るたびにその中からランダムに選ばれます。</small>"
+        : sound
+        ? "音声ファイル（.mp3 / .ogg / .wav）を選んでください。"
+        : model
+        ? "MMD モデルを選んでください。<br><small>モデルのフォルダ（.pmx とテクスチャ）を圧縮した .zip を「ファイル」から選んでください。.pmx だけを選ぶとテクスチャなしになります。</small>"
+        : media
+        ? "写真・画像・GIF を選んでください。<br><small>GIF のアニメーションを使うときは「ファイル」から選んでください（写真アプリからは静止画になることがあります）。</small>"
+        : skinPickText;
+      document.getElementById("pickbtn").textContent = model || sound || motion ? "ファイルを選ぶ" : "画像を選ぶ";
+      pickfile.accept = model || motion ? "" : sound ? "audio/*,.mp3,.ogg,.wav" : media ? "image/*" : "image/png,image/*";
+      pick.classList.add("on");
+      return;
+    }
+    if (e.data === "kb 1") setKeyboard(true);
+    else if (e.data === "kb 0") setKeyboard(false);
+    else if (e.data === "replaced") replaced = true;
+  };
+  ws.onclose = () => {
+    msg.style.display = "flex";
+    slots.clear(); busy = false; next = null;
+    setKeyboard(false);
+    pick.classList.remove("on");
+    ob.classList.remove("on");
+    if (replaced) {  // another phone / tab took over: do not take it back automatically
+      msg.textContent = "別の端末（またはタブ）が接続しました。ここをタップすると、この端末に切り替えます。";
+      msg.onclick = () => { msg.onclick = null; replaced = false; msg.textContent = "接続しています…"; connect(); };
+      return;
+    }
+    msg.textContent = location.hostname.startsWith("172.20.10.")
+      ? "切断されました。再接続しています…（USB 接続が切れた場合は、iPhone の「インターネット共有」の「ほかの人の接続を許可」を一度オフにしてからオンにしてください）"
+      : "切断されました。再接続しています…（PC でエミュレータが起動しているか確認してください）";
+    setTimeout(connect, 2000);
+  };
+}
+layout();
+connect();
+</script>
+</body>
+</html>
