@@ -38,7 +38,7 @@ namespace fs = std::filesystem;
 void log_open_file(const std::string& path);
 void gl_dump_trace();
 namespace tlv { void register_image(MachImage& img); }
-namespace patches { void apply(MachImage& img); void install_input_hooks(); }
+namespace patches { void apply(MachImage& img); void install_input_hooks(); void apply_game_fixes(); }
 namespace objc_stubs {
 gaddr synthesize_class(const std::string& name, bool meta);
 }
@@ -443,6 +443,7 @@ int wmain(int argc, wchar_t** argv) {
     for (auto& i : macho::images()) fix_constant_literals(*i);
     void install_debug_hooks();
     install_debug_hooks();  // EMU_LOGHOOK
+    patches::apply_game_fixes();  // (patches.cpp)
 
     // ---- process arguments ----
     std::string exe_path = std::string(vfs::kBundlePath) + "/minecraftpe";

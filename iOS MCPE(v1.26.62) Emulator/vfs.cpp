@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <mutex>
+#include <set>
 
 namespace vfs {
 namespace {
@@ -14,6 +15,18 @@ struct Mount {
     std::wstring host;
 };
 std::vector<Mount> g_mounts;
+
+// Files that mods add to the app (emu_bundle_write): kept in <data>/bundle_overlay for this run only
+// (emptied at every start, so a removed mod leaves nothing behind) and seen by the game in place of
+// / next to the app's own files. Folders that exist only there are mapped too.
+std::wstring g_overlay;
+std::mutex g_overlay_lock;
+std::set<std::string> g_overlay_paths;  // relative to the bundle, "/a/b.json" (lower case)
+
+std::string lower(std::string s) {
+    for (auto& c : s) c = (char)tolower((unsigned char)c);
+    return s;
+}
 
 std::string normalize(const std::string& p) {
     // resolve "." and ".." and duplicate slashes
@@ -42,6 +55,12 @@ void init(const std::string& host_bundle_dir, const std::string& host_data_dir) 
     std::error_code ec;
     for (const char* d : {"Documents", "Library", "Library/Caches", "Library/Preferences", "tmp", "root"})
         std::filesystem::create_directories(std::filesystem::path(widen(g_data)) / d, ec);
+    g_overlay = widen(g_data + "/bundle_overlay");
+    std::filesystem::remove_all(g_overlay, ec);
+    {
+        std::lock_guard lk(g_overlay_lock);
+        g_overlay_paths.clear();
+    }
     g_mounts.clear();
     g_mounts.push_back({kBundlePath, widen(g_bundle)});
     g_mounts.push_back({kHomePath, widen(g_data)});
@@ -51,6 +70,27 @@ void init(const std::string& host_bundle_dir, const std::string& host_data_dir) 
 }
 
 const std::string& host_bundle_dir() { return g_bundle; }
+
+bool overlay_write(const std::string& rel, const void* data, size_t len) {
+    namespace fs = std::filesystem;
+    std::string r = normalize("/" + rel);
+    fs::path p = fs::path(g_overlay) / fs::path(widen(r.substr(1)));
+    std::error_code ec;
+    fs::create_directories(p.parent_path(), ec);
+    FILE* f = _wfopen(p.c_str(), L"wb");
+    if (!f) return false;
+    bool ok = !len || fwrite(data, 1, len, f) == len;
+    ok = fclose(f) == 0 && ok;
+    if (!ok) return false;
+    std::lock_guard lk(g_overlay_lock);
+    g_overlay_paths.insert(lower(r));
+    // its folders, where the app has none
+    for (size_t i = r.find('/', 1); i != std::string::npos; i = r.find('/', i + 1)) {
+        std::string d = r.substr(0, i);
+        if (!fs::is_directory(fs::path(widen(g_bundle + d)), ec)) g_overlay_paths.insert(lower(d));
+    }
+    return true;
+}
 const std::string& host_data_dir() { return g_data; }
 
 std::string cwd() {
@@ -78,6 +118,10 @@ std::wstring to_host(const char* gp) {
         if (full.size() > m.guest.size() && full.compare(0, m.guest.size(), m.guest) == 0 && full[m.guest.size()] == '/') {
             std::wstring rest = widen(full.substr(m.guest.size()));
             for (auto& c : rest) if (c == L'/') c = L'\\';
+            if (&m == &g_mounts[0]) {  // the bundle: a file a mod added?
+                std::lock_guard lk(g_overlay_lock);
+                if (!g_overlay_paths.empty() && g_overlay_paths.count(lower(full.substr(m.guest.size())))) return g_overlay + rest;
+            }
             return m.host + rest;
         }
     }

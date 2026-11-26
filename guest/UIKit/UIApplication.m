@@ -165,13 +165,12 @@ static UIWindow* key_window(void) { return [UIWindow performSelector:@selector(_
 // game only calls setNeedsUpdateOfPrefersPointerLocked from its GCMouse moved handler, which
 // runs only after the mouse is locked: without asking here the mouse never gets captured in
 // the world (no mouse look). Minecraft's answer is a flag of its platform object (cheap).
+// (no cache of the last value here: -setNeedsUpdateOfPrefersPointerLocked tells the emulator
+// too, and a cache here would then miss the next change. The emulator ignores repeats.)
 static void update_pointer_lock(void) {
-    static int last = -1;
     UIWindow* kw = key_window();
     id vc = kw ? [kw rootViewController] : nil;
     int on = vc && ((BOOL(*)(id, SEL))objc_msgSend)(vc, @selector(prefersPointerLocked));
-    if (on == last) return;
-    last = on;
     emu_set_pointer_locked(on);
 }
 

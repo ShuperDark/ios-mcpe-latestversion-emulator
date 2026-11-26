@@ -307,6 +307,69 @@ EMU_EXPORT NSString* const NSStreamDataWrittenToMemoryStreamKey = @"NSStreamData
 - (void)cancel;
 @end
 static void* transfer_main(void* arg);
+// ===================================================================== response filters (for mods)
+// emu_http_add_body_filter(url_part, fn): the bodies of the responses whose URL contains url_part go to
+// fn(url, body, len, &out_len) before the app gets them; fn returns a malloc'd replacement (out_len bytes)
+// or NULL to keep the body. Such a response is read whole first (its Content-Length is corrected).
+typedef void* (*EmuHttpBodyFilter)(const char* url, const void* body, size_t len, size_t* out_len);
+#define MAX_BODY_FILTERS 16
+static struct { char* part; EmuHttpBodyFilter fn; } g_body_filters[MAX_BODY_FILTERS];
+static int g_body_filter_count;
+static pthread_mutex_t g_body_filter_lock = PTHREAD_MUTEX_INITIALIZER;
+
+EMU_EXPORT int emu_http_add_body_filter(const char* url_part, EmuHttpBodyFilter fn) {
+    if (!url_part || !fn) return -1;
+    pthread_mutex_lock(&g_body_filter_lock);
+    int ok = g_body_filter_count < MAX_BODY_FILTERS;
+    if (ok) {
+        g_body_filters[g_body_filter_count].part = strdup(url_part);
+        g_body_filters[g_body_filter_count].fn = fn;
+        g_body_filter_count++;
+    }
+    pthread_mutex_unlock(&g_body_filter_lock);
+    return ok ? 0 : -1;
+}
+
+static EmuHttpBodyFilter body_filter_for(const char* url) {
+    EmuHttpBodyFilter fn = NULL;
+    pthread_mutex_lock(&g_body_filter_lock);
+    for (int i = 0; i < g_body_filter_count && !fn; i++)
+        if (strstr(url, g_body_filters[i].part)) fn = g_body_filters[i].fn;
+    pthread_mutex_unlock(&g_body_filter_lock);
+    return fn;
+}
+
+// emu_http_add_local_response(url, data, len, content_type): requests of URLs that start with url get
+// these bytes (status 200) without the network, e.g. a picture of a mod for the game's store screens.
+#define MAX_LOCAL_RESPONSES 64
+static struct { char* url; void* data; size_t len; char* type; } g_local[MAX_LOCAL_RESPONSES];
+static int g_local_count;
+
+EMU_EXPORT int emu_http_add_local_response(const char* url, const void* data, size_t len, const char* content_type) {
+    if (!url || (!data && len)) return -1;
+    pthread_mutex_lock(&g_body_filter_lock);
+    int ok = g_local_count < MAX_LOCAL_RESPONSES;
+    if (ok) {
+        g_local[g_local_count].url = strdup(url);
+        g_local[g_local_count].data = malloc(len ? len : 1);
+        if (len) memcpy(g_local[g_local_count].data, data, len);
+        g_local[g_local_count].len = len;
+        g_local[g_local_count].type = strdup(content_type ? content_type : "application/octet-stream");
+        g_local_count++;
+    }
+    pthread_mutex_unlock(&g_body_filter_lock);
+    return ok ? 0 : -1;
+}
+
+static int local_response_for(const char* url) {
+    int r = -1;
+    pthread_mutex_lock(&g_body_filter_lock);
+    for (int i = 0; i < g_local_count && r < 0; i++)
+        if (!strncmp(url, g_local[i].url, strlen(g_local[i].url))) r = i;
+    pthread_mutex_unlock(&g_body_filter_lock);
+    return r;
+}
+
 @implementation _EmuTransfer
 - (instancetype)init { pthread_mutex_init(&_lock, NULL); return self; }
 - (void)dealloc {
@@ -350,6 +413,18 @@ static void* transfer_main(void* arg);
 }
 - (void)_run {
     NSURL* url = [_req URL];
+    {
+        const char* us = [[url absoluteString] UTF8String];
+        int li = us ? local_response_for(us) : -1;
+        if (li >= 0) {  // a mod's local response
+            NSDictionary* f = [NSDictionary dictionaryWithObjectsAndKeys:[NSString stringWithUTF8String:g_local[li].type], @"Content-Type",
+                                                                         [NSString stringWithFormat:@"%lu", (unsigned long)g_local[li].len], @"Content-Length", nil];
+            _onResponse([[[NSHTTPURLResponse alloc] initWithURL:url statusCode:200 HTTPVersion:@"HTTP/1.1" headerFields:f] autorelease]);
+            if (g_local[li].len) _onData([NSData dataWithBytes:g_local[li].data length:g_local[li].len]);
+            _onDone(nil);
+            return;
+        }
+    }
     if (getenv("EMU_OFFLINE")) { _onDone(url_error(-1009, url)); return; }
     // headers: the configuration's, then the request's; the ones WinHTTP manages itself are left out
     NSMutableDictionary* hdr = [NSMutableDictionary dictionary];
@@ -433,6 +508,38 @@ static void* transfer_main(void* arg);
     NSHTTPURLResponse* resp = [[[NSHTTPURLResponse alloc] initWithURL:final statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:fields] autorelease];
     if (trace_http()) NSLog(@"[http] %@ %@ -> %d", [_req HTTPMethod], [url absoluteString], status);
     if (trace_http() && status >= 400) NSLog(@"[http] request headers: %@ body %lu bytes; response headers: %@", hdr, (unsigned long)[body length], fields);
+    // a mod's filter: the whole body first, filtered, then the response with its length
+    const char* final_url = [[final absoluteString] UTF8String];
+    EmuHttpBodyFilter filter = final_url ? body_filter_for(final_url) : NULL;
+    if (filter) {
+        NSMutableData* all = [NSMutableData data];
+        NSError* fe = nil;
+        uint8_t* fb = malloc(65536);
+        for (;;) {
+            int64_t n = emu_http_read(h, fb, 65536);
+            if (n == 0) break;
+            if (n < 0) { fe = url_error((NSInteger)n, url); break; }
+            [all appendBytes:fb length:(NSUInteger)n];
+        }
+        free(fb);
+        pthread_mutex_lock(&_lock); _h = 0; pthread_mutex_unlock(&_lock);
+        emu_http_close(h);
+        if (!fe) {
+            size_t out_len = 0;
+            void* out = filter(final_url, [all bytes], [all length], &out_len);
+            if (out) {
+                all = [NSMutableData dataWithBytes:out length:out_len];
+                free(out);
+            }
+            for (NSString* l in [fields allKeys])
+                if ([l caseInsensitiveCompare:@"Content-Length"] == 0) [fields setObject:[NSString stringWithFormat:@"%lu", (unsigned long)[all length]] forKey:l];
+            resp = [[[NSHTTPURLResponse alloc] initWithURL:final statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:fields] autorelease];
+        }
+        _onResponse(resp);
+        if (!fe && [all length]) _onData(all);
+        _onDone(fe);
+        return;
+    }
     _onResponse(resp);
     // the body
     NSError* e = nil;

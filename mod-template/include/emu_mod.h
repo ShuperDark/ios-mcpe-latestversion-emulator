@@ -124,6 +124,21 @@ void emu_overlay_frame_size(int* w, int* h);
 // into out when cap is big enough (call with out = NULL first).
 uint64_t emu_system_font(void* out, uint64_t cap);
 
+// Adds a file to the game's app (minecraftpe.app, which the game itself cannot write, like on iOS) or
+// replaces one of its files, for this run only: e.g. pieces of its built-in resource packs. rel is a
+// path inside the app ("data/resource_packs/..."). The app on the disk is not changed (the files are
+// kept in <data>/bundle_overlay, emptied at every start: a removed mod leaves nothing behind). Call it
+// from a constructor, before the game reads the files. Returns 0, or -1 (an absolute path, "..").
+int emu_bundle_write(const char* rel, const void* data, uint64_t len);
+
+// HTTP(S) of the game (NSURLSession; these two come from the emulator's Foundation):
+// emu_http_add_body_filter: the bodies of the responses whose URL contains url_part go to
+// fn(url, body, len, &out_len) before the game gets them; fn returns a malloc'd replacement (out_len
+// bytes) or NULL to keep the body. emu_http_add_local_response: requests of URLs that start with url get
+// these bytes (status 200, content_type) without the network. Both return 0, or -1 (too many).
+int emu_http_add_body_filter(const char* url_part, void* (*fn)(const char* url, const void* body, size_t len, size_t* out_len));
+int emu_http_add_local_response(const char* url, const void* data, size_t len, const char* content_type);
+
 // 1 when the memory [addr, addr + len) can be read (check a pointer of unknown origin before following it).
 int emu_readable(const void* addr, uint64_t len);
 

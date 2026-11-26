@@ -207,6 +207,25 @@ void game_resized(int w, int h) {
     g_cpu->call_fp(*gptr<u64>(vt + 0xa8), {app, (u64)w, (u64)h}, {0.0});
 }
 
+// ---- fixes for the 1.26.62 binary (called from main before the game's initializers run;
+// the rest of this file is from the 0.16.2 emulator and is not used) ----
+constexpr gaddr kPlatformCtorClearFlag = 0x10000c86c;  // in AppPlatform_apple::AppPlatform_apple (sub_10000C758)
+void apply_game_fixes() {
+    // AppPlatform_apple's constructor clears its flags at +0xd8 and +0xd9 but not the
+    // "mouse grabbed" flag at +0xda (set by grabMouse / releaseMouse, read by
+    // -[minecraftpeViewController prefersPointerLocked]). On an iPhone the object gets
+    // fresh, zeroed memory; here the allocation can be reused memory, the flag then reads 1
+    // and the title screen locks the pointer (no mouse cursor on the menus in PC mode).
+    // strb wzr, [x8, #0xd8] -> str wzr, [x8, #0xd8] (+0xd8..+0xdb; +0xdb is unused).
+    u32* code = gptr<u32>(kPlatformCtorClearFlag);
+    if (*code == 0x3903611f) {
+        *code = 0xb900d91f;
+        LOGI("patched AppPlatform_apple constructor (pointer lock flag cleared)");
+    } else {
+        LOGW("patch: AppPlatform_apple constructor has unexpected code %08x (the pointer lock flag is not cleared)", *code);
+    }
+}
+
 void apply(MachImage& img) {
     {
         u32* code = gptr<u32>(kGetScreenType);

@@ -406,6 +406,9 @@ void draw(u32 fbo, int w, int h, void* (*proc)(const char*)) {
     glBufferData_(0x8893, (GLsizeiptr)(idx.size() * sizeof(u32)), idx.data(), 0x88E0);
     for (const Cmd& c : cmds) {
         if (!c.elem_count || size_t(c.idx_offset) + c.elem_count > idx.size()) continue;
+        bool ok = true;  // (every index must point into the vertex buffer: the driver would read past it)
+        for (u32 k = 0; k < c.elem_count && ok; k++) ok = size_t(idx[c.idx_offset + k]) + c.vtx_offset < vtx.size();
+        if (!ok) continue;
         int x0 = (int)(c.clip[0] * sx), y0 = (int)(c.clip[1] * sy), x1 = (int)(c.clip[2] * sx + 0.999f), y1 = (int)(c.clip[3] * sy + 0.999f);
         if (x1 <= x0 || y1 <= y0) continue;
         glScissor(x0, h - y1, x1 - x0, y1 - y0);

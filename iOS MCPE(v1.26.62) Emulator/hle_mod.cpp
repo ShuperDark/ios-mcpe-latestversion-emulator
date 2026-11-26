@@ -1,6 +1,7 @@
 // Services for mods (guest dylibs loaded from <data>/mods, see guest/include/emu/mod.h).
 #include "hle.h"
 #include "macho.h"
+#include "vfs.h"
 #include "vmem.h"
 
 #include <cstring>
@@ -135,4 +136,21 @@ HLE_FUNC(emu_readable, int, (u64 addr, u64 len)) {
         a = (u64)mi.BaseAddress + mi.RegionSize;
     }
     return 1;
+}
+
+// Adds a file to the app's bundle (read-only for the game, like on iOS) for this run: rel is a path
+// inside minecraftpe.app ("data/resource_packs/persona/pieces/x/x.json"), new or replacing the app's
+// own. The app on the disk is not changed (vfs.cpp: the overlay is emptied at every start, so a mod
+// that is removed leaves nothing behind). Returns 0, or -1 (a bad path: absolute, "..", "\" or ":").
+HLE_FUNC(emu_bundle_write, int, (const char* rel, const void* data, u64 len)) {
+    if (!rel || !*rel || rel[0] == '/' || strstr(rel, "..") || strchr(rel, '\\') || strchr(rel, ':') || (len && !data)) {
+        LOGW("[mod] emu_bundle_write: refusing the path %s", rel ? rel : "(null)");
+        return -1;
+    }
+    if (!vfs::overlay_write(rel, data, (size_t)len)) {
+        LOGW("[mod] emu_bundle_write: cannot write %s", rel);
+        return -1;
+    }
+    LOGD("[mod] added %s to the app", rel);
+    return 0;
 }

@@ -20,6 +20,8 @@ std::string cwd();
 bool set_cwd(const char* guest_path);
 
 const std::string& host_bundle_dir();
+// Adds / replaces a file of the bundle for this run (rel: "data/..."; see vfs.cpp)
+bool overlay_write(const std::string& rel, const void* data, size_t len);
 const std::string& host_data_dir();
 
 // The app bundle is read-only (as on iOS)

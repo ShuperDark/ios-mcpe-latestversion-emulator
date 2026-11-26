@@ -501,7 +501,7 @@ void size(int* w, int* h) {
 
 // debug: EMU_AUTOTAP="12:640,370;20:300,200" taps (window pixels) at the given seconds.
 // Other entries: "20:key=E" (press+release; ESC or #<vk> also work), "20:keydown=W",
-// "22:keyup=W", "20:text=/help" (typed characters), "20:mouse=100,0" (relative motion), "20:mbutton=1,1" (game mouse button
+// "22:keyup=W", "20:text=/help" (typed characters), "20:wheel=640,360,-1", "20:touchdrag=640,500,640,200", "20:mouse=100,0" (relative motion), "20:mbutton=1,1" (game mouse button
 // 1 left / 2 right, 1 down / 0 up).
 static int autotap_vk(const char* k) {
     if (_stricmp(k, "ESC") == 0) return VK_ESCAPE;
@@ -509,7 +509,7 @@ static int autotap_vk(const char* k) {
     return toupper((u8)k[0]);
 }
 static void autotap() {
-    enum { Tap, Key, KeyDown, KeyUp, Move, MButton, Touch, Hover, Char };
+    enum { Tap, Key, KeyDown, KeyUp, Move, MButton, Touch, Hover, Char, Wheel, TDown, TMove, TUp };
     struct Item { double t; int kind; float x, y; };
     static std::vector<Item> items;
     static bool parsed = false;
@@ -529,6 +529,20 @@ static void autotap() {
                 char txt[64];
                 if (sscanf(item.c_str(), "%lf:text=%63[^;]", &t, txt) == 2) {  // typed characters (one WM_CHAR each)
                     for (int k = 0; txt[k]; k++) items.push_back({t + k * 0.05, Char, 0, (float)(u8)txt[k]});
+                    pos = e + 1;
+                    continue;
+                }
+                float x2, y2;
+                if (sscanf(item.c_str(), "%lf:touchdrag=%f,%f,%f,%f", &t, &x, &y, &x2, &y2) == 5) {  // a finger moved over 0.5 s
+                    items.push_back({t, TDown, x, y});
+                    for (int k = 1; k <= 10; k++) items.push_back({t + k * 0.05, TMove, x + (x2 - x) * k / 10, y + (y2 - y) * k / 10});
+                    items.push_back({t + 0.6, TUp, x2, y2});
+                    pos = e + 1;
+                    continue;
+                }
+                if (sscanf(item.c_str(), "%lf:wheel=%f,%f,%15[^;]", &t, &x, &y, key) == 4) {  // one wheel notch (+1 / -1)
+                    items.push_back({t, Wheel, x, y});
+                    items.back().kind = atoi(key) > 0 ? Wheel : -Wheel;
                     pos = e + 1;
                     continue;
                 }
@@ -555,6 +569,11 @@ static void autotap() {
             break;
         case KeyDown: PostMessageW(g_hwnd, WM_KEYDOWN, (WPARAM)it.y, 1); break;
         case Char: PostMessageW(g_hwnd, WM_CHAR, (WPARAM)it.y, 1); break;
+        case Wheel:
+        case -Wheel: push({EvGameMouseButton, 4, it.x, it.y, (u32)(it.kind == Wheel ? 1 : -1)}); break;
+        case TDown: push({EvPointerDown, 5, it.x, it.y}); break;
+        case TMove: push({EvPointerMove, 5, it.x, it.y}); break;
+        case TUp: push({EvPointerUp, 5, it.x, it.y}); break;
         case KeyUp: PostMessageW(g_hwnd, WM_KEYUP, (WPARAM)it.y, 1 | (1u << 30) | (1u << 31)); break;
         case Move: push({EvGameMouseMove, 0, it.x, it.y}); break;
         case MButton: push({EvGameMouseButton, (s32)it.x, g_w / 2.0f, g_h / 2.0f, (u32)(s32)it.y}); break;
@@ -577,9 +596,20 @@ static void autotap() {
     }
 }
 
+// the keyboard / IME (and the phone's text box) are on while the game or a mod's UI (emu_overlay_capture
+// with EMU_OVERLAY_WANT_KEYBOARD) has a text field with the focus
+bool g_ime_on = false;
+void apply_text_input() {
+    bool on = g_text_input || overlay::wants_keyboard();
+    if (g_hwnd && on != g_ime_on) ImmAssociateContextEx(g_hwnd, nullptr, on ? IACE_DEFAULT : 0);
+    g_ime_on = on;
+    remote::set_text_input(on);
+}
+
 int poll(Event* out, int max) {
     apply_requests();
     update_capture();  // (a mod's UI may have opened or closed: emu_overlay_capture)
+    apply_text_input();
     autotap();
     MSG m;
     while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) {
@@ -706,10 +736,9 @@ void present(u32 rb, int rb_w, int rb_h) {
 }
 
 void set_text_input(bool on) {
-    if (g_hwnd && on != g_text_input) ImmAssociateContextEx(g_hwnd, nullptr, on ? IACE_DEFAULT : 0);
     g_text_input = on;
     update_capture();
-    remote::set_text_input(on);
+    apply_text_input();
 }
 
 void set_gameplay(bool on) {
