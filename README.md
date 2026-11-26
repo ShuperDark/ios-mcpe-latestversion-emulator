@@ -325,7 +325,7 @@ Objective-C のメソッドは名前で見つかるので、ゲームのアド�
 - `emu_http_add_body_filter(URL の一部, 関数)` で、ゲームの HTTP(S) のレスポンス本文を受け取る前に書き換えられます。
   `emu_http_add_local_response(URL, データ, 長さ, Content-Type)` で、その URL への要求にネットを使わずデータを返せます
   （どちらもゲスト用 Foundation の NSURLSession の実装 `guest/Foundation/NSURLNet.m`）
-- カスタムエモートを追加する Mod の例：[CustomEmotesMod](../CustomEmotesMod-Emu)
+- カスタムエモートを追加する Mod の例：[CustomEmotesMod](https://github.com/ShuperDark/CustomEmotesMod-Emu)
 - このエミュレータ用の大きな Mod の例：[ShupaClient](../ShupaClient-Emu)（ImGui のメニュー、vtable フック、QuickJS の JS MOD）
 - 必要なのは Python と `py -m pip install ziglang` だけです（エミュレータのビルドで入っていればそのまま使えます）
 
